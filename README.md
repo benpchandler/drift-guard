@@ -130,6 +130,11 @@ repeat judgment, and the adapter ignores its own marked continuation prompt and 
 `[Jev Stop review]` continuation prefix when tracking human drift. Warn mode never requests continuation.
 The adapter handles only these two top-level events, not `SubagentStop` or subagent transcript parsing.
 
+Codex requires every `Stop` hook to print either nothing or a single JSON object. Drift's stop hook prints nothing
+on a quiet turn and on every failure. If Codex shows `Hook failed` with `hook returned invalid stop hook JSON
+output`, look for another `Stop` hook, including project-level `.codex/hooks.json` files, that echoes plain text. Such a
+hook needs to redirect its stdout, for example to stderr.
+
 ## Commands
 
     uv run drift report            # adherence baseline vs live, feedback accuracy, per session, weekly

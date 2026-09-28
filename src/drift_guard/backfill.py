@@ -47,8 +47,8 @@ class Job:
         return int(size / CHARS_PER_TOKEN)
 
 
-# The guard's own sessions are excluded from the baseline; older transcripts keep the repo's former name.
-OWN_PROJECT_MARKERS = ("drift-guard", "adhd-guard")
+# The guard's own sessions are excluded from the baseline.
+OWN_PROJECT_MARKERS = ("drift-guard",)
 
 
 def session_jobs(path: Path, max_turns: int) -> list[Job]:
