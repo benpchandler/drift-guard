@@ -1,12 +1,95 @@
 # Drift
 
-A hook pair for Claude Code and Codex that remembers what a session is for and flags when the conversation drifts away from it.
-Jev (TypeSafe System One) judges each turn; code owns the scoring, thresholds, and actions.
+Drift remembers what a session is for. Claude Code and Codex use a drift-detection hook pair;
+Pi uses an intent ledger integrated with bounded next-safe follow-ups.
+For Claude Code/Codex, Jev (TypeSafe System One) judges each turn; code owns the scoring, thresholds, and actions.
+The Pi integration below makes no Jev calls and does not change either existing adapter's scoring policy.
 
 - **UserPromptSubmit** (human drift): the first typed prompt becomes the session intent. Each later prompt is
   judged against it, with the agent's previous reply as context so "yes, do it" counts as on-task.
 - **Stop** (agent drift): the agent's final reply is judged against the intent and the latest request; it counts
   as drift only when it serves neither.
+
+## Install (Pi)
+
+Requires Pi 0.87.1+, Python 3.13+ and `uv`. In this checkout:
+
+```sh
+uv sync
+pi install /absolute/path/to/drift-guard
+```
+
+Retire any older standalone `next-safe.js` extension before reloading: this package owns the hook now,
+so keeping both active would register duplicate commands/continuations. Reload Pi or start a fresh session.
+The package's extension calls its checkout's `.venv/bin/python`; run `uv sync` after moving/updating the checkout.
+No TypeSafe key is needed for the Pi intent ledger.
+
+### Original intent and supporting task
+
+The first human task prompt is stored verbatim as the original intent. Later prompts update the latest request,
+not the original. On an existing session, the selected branch's saved Drift snapshot is restored; if none exists,
+its first user message is the initial intent. Extension-generated input never establishes or replaces the intent.
+Use `/drift intent FULL GOAL` when deliberately changing the session's purpose; `/drift status` shows the ledger.
+Only that user command can replace the original through the Pi interface.
+
+The model-facing `drift_task` tool maintains one active **supporting task**: task text, why it advances the original,
+owner (including a worker/run or SBT reference), completion condition, status and evidence. It must be recorded
+before an intermediate assignment is handed off. `block`/`resume` retain the task; `complete`/`cancel` require
+its current id and evidence, archive it, clear the active slot and return to the original goal. A second assignment
+cannot silently overwrite an unfinished task. Changing the original intent archives an unfinished task as canceled.
+
+This is an intent/context ledger, **not a second project backlog**, a claim, or authority to add scope. SBT remains
+the coordination/task hub. Claude/Codex session records are backward compatible with the added optional fields;
+their existing relevance questions and warning behavior remain unchanged.
+
+### Default-on, configurable next-safe
+
+Next-safe defaults **on**, with **at most one follow-up per human prompt** and a review window of the last
+**20 user/assistant interaction messages** (not physical JSONL lines). Tool output and automatic custom prompts
+are excluded from this window; context edits/compaction are respected. Longer messages are explicitly excerpted.
+The full original intent remains in state. The hook references both intents, the latest request and recent interaction.
+Before a further action, it asks the agent to state `User said / Supporting task / My assumption and next action`.
+It does not require a repeated preamble when stopping.
+
+```text
+/next-safe status
+/next-safe limit 3       # maximum automatic follow-ups for each subsequent human prompt (0..10)
+/next-safe history 30    # recent user/assistant messages to inspect (1..100)
+/next-safe off
+/next-safe on
+```
+
+Preferences persist in Pi's agent directory as `next-safe.json` across reloads and new sessions. An explicit
+`off` overrides the on-by-default behavior until `on`; `limit 0` also disables injection. Config changes apply
+to the next human prompt and never replenish an active budget. Invalid commands leave preferences unchanged;
+malformed configuration disables automatic continuation until repaired. There is no unbounded option or timer.
+
+The limit is a **ceiling**, not a quota. Text-only follow-ups, failed tools and repeated identical tool operations
+do not replenish progress. Distinct successful tool operations allow another check within the budget; this is
+an observable activity guard, not proof of semantic progress. `next_safe_stop` ends the current budget immediately
+when done/blocked/awaiting a worker or when no useful authorized action remains. Abort/provider failure cancels
+remaining checks. Queued human input and other continuation hooks take priority. Pi subagent child processes
+are excluded so their parent's bounded assignment does not grow a second loop.
+
+Drift snapshots use branch-relative Pi custom entries; an external mirror lives at `~/.local/state/drift-pi`.
+Reload, resume, fork/clone and tree navigation restore only the selected branch, including completed-task history.
+An unavailable state bridge stops automatic continuation, reports the tracking failure and leaves human input usable.
+The ledger does not authorize unrelated bug fixing when the original task is done. Agent adherence to the
+quote/assumption instructions is still model behavior, not a sandbox guarantee.
+
+Overrides for isolated testing or alternative installations: `DRIFT_PI_STATE_DIR`, `DRIFT_NEXT_SAFE_CONFIG`,
+`DRIFT_PYTHON`. To inspect the mirror with the existing CLI:
+
+```sh
+DRIFT_STATE_DIR="$HOME/.local/state/drift-pi" uv run drift status SESSION_ID
+uv run python scripts/verify_pi.py --evidence-dir /tmp/drift-pi-evidence
+```
+
+The verifier drives the actual Pi RPC runtime using an isolated agent directory, state directory and deterministic
+loopback model. It covers tool-based task lifecycle, original-intent persistence, default-on/disable, bounded
+multi-follow-up progress, repeated/no-progress stopping, queued input, abort/error, actual runtime reload,
+compaction, branch navigation, clone/switch, resume and invalid configuration. It proves transport/lifecycle,
+not an external model's judgment about scope or implied intent.
 
 ## Install (Claude Code)
 

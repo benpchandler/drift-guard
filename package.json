@@ -1,0 +1,13 @@
+{
+  "name": "drift-guard-pi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Drift intent ledger and bounded next-safe continuation for Pi",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["extensions/drift.js"] },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": ">=0.87.1"
+  }
+}

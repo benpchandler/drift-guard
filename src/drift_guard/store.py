@@ -48,6 +48,26 @@ class JudgmentRef:
 
 
 @dataclass(frozen=True)
+class SupportingTask:
+    """A bounded means to the original intent, never a replacement for it."""
+
+    id: str
+    text: str
+    rationale: str
+    owner: str
+    completion_condition: str
+    status: str = "active"  # active | blocked | done | canceled
+    evidence: str = ""
+    updated_at: str = field(default_factory=now_iso)
+
+    def __post_init__(self) -> None:
+        if self.status not in {"active", "blocked", "done", "canceled"}:
+            raise ValueError("unknown supporting-task status")
+        if not all(value.strip() for value in (self.id, self.text, self.rationale, self.owner, self.completion_condition)):
+            raise ValueError("supporting tasks require text, rationale, owner and completion condition")
+
+
+@dataclass(frozen=True)
 class SessionState:
     session_id: str
     intent: str
@@ -59,6 +79,8 @@ class SessionState:
     last_reply: str = ""  # the agent's latest final message, context for judging a short human reply
     last_human: JudgmentRef | None = None  # the most recent judgment of a human prompt
     last_agent: JudgmentRef | None = None  # the most recent judgment of an agent reply
+    supporting_task: SupportingTask | None = None
+    supporting_task_history: tuple[SupportingTask, ...] = ()
 
     def __post_init__(self) -> None:
         assert self.intent.strip(), "a session state always carries an intent"
@@ -128,6 +150,19 @@ def _ref(raw: dict[str, Any] | None) -> JudgmentRef | None:
     return None if raw is None else JudgmentRef(**raw)
 
 
+def session_from_record(raw: dict[str, Any]) -> SessionState:
+    """Decode current and pre-supporting-task records without mutating the caller."""
+    record = dict(raw)
+    record["human"] = DriftTrack(**record.get("human", {}))
+    record["agent"] = DriftTrack(**record.get("agent", {}))
+    record["last_human"] = _ref(record.get("last_human"))
+    record["last_agent"] = _ref(record.get("last_agent"))
+    task = record.get("supporting_task")
+    record["supporting_task"] = None if task is None else SupportingTask(**task)
+    record["supporting_task_history"] = tuple(SupportingTask(**item) for item in record.get("supporting_task_history", []))
+    return SessionState(**record)
+
+
 class Store:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -145,12 +180,7 @@ class Store:
         path = self._session_path(session_id)
         if not path.exists():
             return None
-        raw: dict[str, Any] = json.loads(path.read_text())
-        raw["human"] = DriftTrack(**raw["human"])
-        raw["agent"] = DriftTrack(**raw["agent"])
-        raw["last_human"] = _ref(raw.get("last_human"))
-        raw["last_agent"] = _ref(raw.get("last_agent"))
-        return SessionState(**raw)
+        return session_from_record(json.loads(path.read_text()))
 
     def save(self, state: SessionState) -> None:
         self._write_atomic(self._session_path(state.session_id), asdict(state))
