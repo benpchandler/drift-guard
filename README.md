@@ -50,7 +50,7 @@ are excluded from this window; context edits/compaction are respected. Longer me
 The full original intent remains in state. The hook references both intents, the latest request and recent interaction.
 Before a further action, it asks the agent to state `User said / Supporting task / My assumption and next action`.
 It does not require a repeated preamble when stopping. Automatic visible replies are instructed to stay within
-**60 words / 3 short lines**, quoting at most 12 user words; this is model guidance, not a hard text truncator.
+**100 words total**, including the preamble and final reply, quoting at most 12 user words; this is model guidance, not a hard text truncator.
 The hook context renders as one compact TUI line, with the full context available through Pi's expand shortcut.
 The output budget does not limit tool work. An answered question is not necessarily fulfilled practical intent:
 prepare a directly necessary missing artifact when already authorized, without starting unrelated optional projects.

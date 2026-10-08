@@ -341,7 +341,7 @@ export default function(pi) {
                     "enabled": True,
                     "since": "2026-01-01T00:00:00Z",
                     "count": 2,
-                    "policy_version": "2026-10-08-proactive-bounded-short-v2",
+                    "policy_version": "2026-10-08-proactive-bounded-100-words-v3",
                 }
             )
         )
@@ -355,6 +355,8 @@ export default function(pi) {
             assert "ORIGINAL INTENT" in follow_ups(calls)[0]
             assert "1/3 maximum" in follow_ups(calls)[0]
             assert "User said:" in follow_ups(calls)[0]
+            assert "at most 100 words total, including the preamble and any final reply" in follow_ups(calls)[0]
+            assert "at most 60 words" not in follow_ups(calls)[0]
             assert "RECENT INTERACTION" in follow_ups(calls)[0]
             passed.append("package discovery, one hook, default on, original intent and visible-assumption instruction delivered")
 
@@ -367,7 +369,7 @@ export default function(pi) {
             passed.append("status and invalid configuration do not re-arm; later human request preserves original goal")
             observations = json.loads((agent / "verification/drift-next-safe/behavior/live-observations.json").read_text())
             assert observations["observed"] == 2 and observations["remaining_future_firings"] == 0
-            assert observations["policy_version"] == "2026-10-08-proactive-bounded-short-v2"
+            assert observations["policy_version"] == "2026-10-08-proactive-bounded-100-words-v3"
             assert all(row["behavioral_review"] == "pending_agent_review" for row in observations["observations"])
             passed.append("passive settlement collector records actual bounded firings without inventing behavioral pass labels")
             (agent / "next-safe-benchmark.json").write_text("null")
