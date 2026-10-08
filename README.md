@@ -44,12 +44,16 @@ their existing relevance questions and warning behavior remain unchanged.
 
 ### Default-on, configurable next-safe
 
-Next-safe defaults **on**, with **at most one follow-up per human prompt** and a review window of the last
+Next-safe defaults **on**, with **at most three follow-ups per human prompt** and a review window of the last
 **20 user/assistant interaction messages** (not physical JSONL lines). Tool output and automatic custom prompts
 are excluded from this window; context edits/compaction are respected. Longer messages are explicitly excerpted.
 The full original intent remains in state. The hook references both intents, the latest request and recent interaction.
 Before a further action, it asks the agent to state `User said / Supporting task / My assumption and next action`.
-It does not require a repeated preamble when stopping.
+It does not require a repeated preamble when stopping. Automatic visible replies are instructed to stay within
+**60 words / 3 short lines**, quoting at most 12 user words; this is model guidance, not a hard text truncator.
+The hook context renders as one compact TUI line, with the full context available through Pi's expand shortcut.
+The output budget does not limit tool work. An answered question is not necessarily fulfilled practical intent:
+prepare a directly necessary missing artifact when already authorized, without starting unrelated optional projects.
 
 ```text
 /next-safe status
@@ -67,7 +71,10 @@ malformed configuration disables automatic continuation until repaired. There is
 The limit is a **ceiling**, not a quota. Text-only follow-ups, failed tools and repeated identical tool operations
 do not replenish progress. Distinct successful tool operations allow another check within the budget; this is
 an observable activity guard, not proof of semantic progress. `next_safe_stop` ends the current budget immediately
-when done/blocked/awaiting a worker or when no useful authorized action remains. Abort/provider failure cancels
+when done/blocked/awaiting a worker or when no useful authorized action remains. It requires explanatory evidence;
+`done` is rejected while an unfinished supporting task exists. Finish/archive that task with evidence first, or
+report the actual blocker/wait rather than claiming completion. A firing is not a one-tool quota: normal tool
+use may continue to a verified milestone. Abort/provider failure cancels
 remaining checks. Queued human input and other continuation hooks take priority. Pi subagent child processes
 are excluded so their parent's bounded assignment does not grow a second loop.
 
@@ -89,7 +96,9 @@ The verifier drives the actual Pi RPC runtime using an isolated agent directory,
 loopback model. It covers tool-based task lifecycle, original-intent persistence, default-on/disable, bounded
 multi-follow-up progress, repeated/no-progress stopping, queued input, abort/error, actual runtime reload,
 compaction, branch navigation, clone/switch, resume and invalid configuration. It proves transport/lifecycle,
-not an external model's judgment about scope or implied intent.
+not an external model's judgment about scope or implied intent. It also exercises the native TUI's compact
+hook rendering and real keyboard expansion. See [the behavioral benchmark](benchmarks/README.md) for
+opt-in live-model decision replays and passive collection of actual firings; those are separate evidence streams.
 
 ## Install (Claude Code)
 

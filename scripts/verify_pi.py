@@ -6,13 +6,19 @@ Run with --evidence-dir PATH to retain replayable protocol and request evidence.
 """
 
 import argparse
+import fcntl
 import http.server
 import json
 import os
+import pty
 import queue
+import re
+import select
 import shutil
+import struct
 import subprocess
 import tempfile
+import termios
 import threading
 import time
 from pathlib import Path
@@ -52,8 +58,14 @@ class Provider(http.server.BaseHTTPRequestHandler):
         if follow_up and current in {"progress", "repeat"}:
             count = sum("[Automatic next-safe follow-up" in str(m.get("content", "")) for m in messages)
             operation = ("acceptance_progress", {"step": 1 if current == "repeat" else count})
-        elif (follow_up and current == "stop") or (last["role"] == "user" and not follow_up and current == "stop_initial"):
-            operation = ("next_safe_stop", {"reason": "done"})
+        elif (follow_up and current in {"stop", "active_stop"}) or (
+            last["role"] == "user" and not follow_up and current == "stop_initial"
+        ):
+            operation = ("next_safe_stop", {"reason": "done", "evidence": "The fixture request was answered"})
+        elif last["role"] == "tool" and current == "active_stop" and "An unfinished supporting task" in content:
+            operation = ("acceptance_progress", {"step": 1})
+        elif last["role"] == "tool" and current == "active_stop" and "Verified step 1" in content:
+            operation = ("drift_task", {"action": "complete", "task_id": task_id, "evidence": "Fixture verification passed"})
         elif last["role"] == "user" and not follow_up and current == "set":
             operation = (
                 "drift_task",
@@ -116,6 +128,7 @@ class Client:
     def __init__(self, agent, directory, extra=()):
         env = {key: value for key, value in os.environ.items() if not key.startswith(("PI_", "DRIFT_"))}
         env.update(PI_CODING_AGENT_DIR=str(agent), PI_OFFLINE="1", DRIFT_PI_STATE_DIR=str(directory / "drift-state"))
+        self.environment = env
         self.process = subprocess.Popen(
             [
                 shutil.which("pi"),
@@ -204,6 +217,59 @@ def follow_ups(calls):
     return messages
 
 
+def verify_native_tui(client, evidence_dir):
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    arguments = list(client.process.args)
+    arguments.remove("--mode")
+    arguments.remove("rpc")
+    if "--session" in arguments:
+        index = arguments.index("--session")
+        del arguments[index : index + 2]
+    environment = dict(client.environment, TERM="xterm-256color", COLUMNS="80", LINES="24")
+    process = subprocess.Popen(
+        arguments,
+        env=environment,
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        cwd=Path(client.environment["DRIFT_PI_STATE_DIR"]).parent,
+        start_new_session=True,
+    )
+    os.close(slave)
+    captured = bytearray()
+    ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
+
+    def until(marker):
+        start = len(captured)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.1)[0]:
+                captured.extend(os.read(master, 65536))
+                plain = ansi.sub("", captured[start:].decode(errors="replace"))
+                if marker in plain:
+                    return plain
+        raise AssertionError(f"Native TUI did not show {marker!r}")
+
+    try:
+        until("[Extensions]")
+        os.write(master, b"Native TUI fixture request")
+        until("Native TUI fixture request")
+        os.write(master, b"\r")
+        collapsed = until("Next-safe 1/3")
+        assert "ORIGINAL INTENT" not in collapsed
+        os.write(master, b"\x0f")
+        assert "ORIGINAL INTENT" in until("ORIGINAL INTENT")
+        passed.append("native TUI shows compact one-line hook; keyboard expansion reveals original full context")
+    finally:
+        if evidence_dir:
+            evidence_dir.mkdir(parents=True, exist_ok=True)
+            (evidence_dir / "tui-evidence.txt").write_bytes(captured)
+        os.close(master)
+        process.kill()
+        process.wait(timeout=5)
+
+
 def main():  # noqa: PLR0915 - one ordered end-to-end user journey, sharing the same RPC session
     global scenario, task_id  # noqa: PLW0603 - the loopback fixture reads the scripted scenario
     parser = argparse.ArgumentParser()
@@ -269,6 +335,16 @@ export default function(pi) {
                 }
             )
         )
+        (agent / "next-safe-benchmark.json").write_text(
+            json.dumps(
+                {
+                    "enabled": True,
+                    "since": "2026-01-01T00:00:00Z",
+                    "count": 2,
+                    "policy_version": "2026-10-08-proactive-bounded-short-v2",
+                }
+            )
+        )
         client = Client(agent, directory)
         try:
             commands = [c["name"] for c in client.command("get_commands")["commands"]]
@@ -277,6 +353,7 @@ export default function(pi) {
             original = client.state()["intent"]
             assert original == "Regenerate and publish the corrected workbook"
             assert "ORIGINAL INTENT" in follow_ups(calls)[0]
+            assert "1/3 maximum" in follow_ups(calls)[0]
             assert "User said:" in follow_ups(calls)[0]
             assert "RECENT INTERACTION" in follow_ups(calls)[0]
             passed.append("package discovery, one hook, default on, original intent and visible-assumption instruction delivered")
@@ -288,6 +365,14 @@ export default function(pi) {
             client.prompt("What is my status?", 2)
             assert client.state()["intent"] == original
             passed.append("status and invalid configuration do not re-arm; later human request preserves original goal")
+            observations = json.loads((agent / "verification/drift-next-safe/behavior/live-observations.json").read_text())
+            assert observations["observed"] == 2 and observations["remaining_future_firings"] == 0
+            assert observations["policy_version"] == "2026-10-08-proactive-bounded-short-v2"
+            assert all(row["behavioral_review"] == "pending_agent_review" for row in observations["observations"])
+            passed.append("passive settlement collector records actual bounded firings without inventing behavioral pass labels")
+            (agent / "next-safe-benchmark.json").write_text("null")
+            client.prompt("Malformed optional collector must not interrupt agent work", 2)
+            passed.append("malformed optional benchmark configuration does not interrupt normal work")
 
             scenario = "set"
             calls = client.prompt("Fix the rounding so publication can proceed", 3)
@@ -439,12 +524,23 @@ export default function(pi) {
             client.prompt("Resume with the same goal", 2)
             assert client.state()["intent"] == "A deliberately changed goal"
             passed.append("explicit user intent replacement and process restart/resume persistence")
+            client.command("prompt", message="/next-safe limit 3")
+            scenario = "set"
+            client.prompt("Track the fixture supporting work", 3)
+            task_id = client.state()["supporting_task"]["id"]
+            scenario = "active_stop"
+            client.prompt("Do not abandon unfinished supporting work after answering", 6)
+            assert client.state()["supporting_task"] is None
+            assert client.state()["supporting_task_history"][-1]["evidence"] == "Fixture verification passed"
+            passed.append("done stop rejected for active task; tool work and evidence-backed completion proceed before stopping")
+            scenario = "normal"
             (agent / "next-safe.json").write_text('{"enabled": true, "limit": 999, "history": 20}')
             client.command("prompt", message="/test-reload")
             client.prompt("Malformed preferences must fail safe", 1)
             client.command("prompt", message="/next-safe on")
             client.prompt("Valid preferences recover", 2)
             passed.append("malformed preferences disable automatic work; explicit valid configuration repairs them")
+            verify_native_tui(client, args.evidence_dir)
             assert not any(r.get("type") == "extension_error" for r in records)
         finally:
             release.set()
