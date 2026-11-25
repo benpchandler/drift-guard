@@ -97,6 +97,19 @@ def test_malformed_or_incomplete_results_are_not_silent_passes(value):
         parse_response(value)
 
 
+def test_collector_skips_decoding_transcripts_outside_the_requested_cohort(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "ordinary.jsonl").write_text(json.dumps({"type": "message", "content": "next-safe"}))
+    (project / "other-policy.jsonl").write_text(json.dumps({"customType": "next-safe", "details": {"policy_version": "old"}}))
+
+    def unexpected_decode(*args, **kwargs):
+        raise AssertionError("out-of-cohort transcript was decoded")
+
+    monkeypatch.setattr(json, "loads", unexpected_decode)
+    assert collect(tmp_path, parse_time("2026-10-08T20:19:23Z"), policy_version="current") == []
+
+
 def test_collector_reports_actual_boundaries_and_does_not_fabricate_future(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()

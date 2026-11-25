@@ -9,8 +9,10 @@ Re-run after more user work; missing future firings stay explicitly pending.
 import argparse
 import json
 import os
+import re
 import tempfile
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -28,26 +30,36 @@ def text(content: Any) -> str:
     return "\n".join(block.get("text", "") for block in content or [] if block.get("type") == "text")
 
 
-def _read_entries(path: Path, since: datetime) -> list[dict[str, Any]]:
-    if path.stat().st_mtime < since.timestamp():
+NEXT_SAFE_ENTRY = re.compile(rb'"customType"\s*:\s*"next-safe"')
+
+
+def _read_entries(path: Path, since: datetime, policy_version: str | None) -> list[dict[str, Any]]:
+    try:
+        if path.stat().st_mtime < since.timestamp():
+            return []
+        snapshot = path.read_bytes()
+    except FileNotFoundError:
         return []
+    if b'"next-safe"' not in snapshot or not NEXT_SAFE_ENTRY.search(snapshot):
+        return []
+    if policy_version is not None and json.dumps(policy_version, ensure_ascii=False).encode() not in snapshot:
+        if json.dumps(policy_version).encode() not in snapshot:
+            return []
     entries = []
-    with path.open() as handle:
-        for line in handle:
-            try:
-                entry = json.loads(line)
-                if isinstance(entry, dict):
-                    entries.append(entry)
-            except json.JSONDecodeError:
-                # Active writers can have one incomplete trailing record; never fabricate it.
-                continue
+    for line in BytesIO(snapshot):
+        try:
+            entry = json.loads(line)
+            if isinstance(entry, dict):
+                entries.append(entry)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
     return entries
 
 
 def collect(sessions: Path, since: datetime, limit: int = 20, policy_version: str | None = None) -> list[dict[str, Any]]:
     observations = []
     for path in sessions.glob("*/*.jsonl"):
-        entries = _read_entries(path, since)
+        entries = _read_entries(path, since, policy_version)
         sid = next((entry["id"] for entry in entries if entry.get("type") == "session"), "unknown")
         state = None
         for index, entry in enumerate(entries):
